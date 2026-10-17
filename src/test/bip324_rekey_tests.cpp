@@ -47,6 +47,10 @@ BOOST_AUTO_TEST_CASE(bidirectional_rekey_boundaries)
     BOOST_REQUIRE(initiator);
     BOOST_REQUIRE(responder);
     BOOST_CHECK(std::ranges::equal(initiator.GetSessionID(), responder.GetSessionID()));
+    BOOST_CHECK(std::ranges::equal(
+        initiator.GetSendGarbageTerminator(), responder.GetReceiveGarbageTerminator()));
+    BOOST_CHECK(std::ranges::equal(
+        responder.GetSendGarbageTerminator(), initiator.GetReceiveGarbageTerminator()));
 
     // Exercise both independent cipher directions across two rekey boundaries.
     constexpr unsigned PACKET_COUNT{2 * BIP324Cipher::REKEY_INTERVAL + 3};
@@ -98,6 +102,27 @@ BOOST_AUTO_TEST_CASE(bidirectional_rekey_boundaries)
         BOOST_CHECK(!receiver.Decrypt(
             std::span{ciphertext}.subspan(BIP324Cipher::LENGTH_LEN),
             altered_aad, ignore, recovered));
+    }
+
+    // Changing the authentication tag must fail in either direction after rekeying.
+    for (bool from_initiator : {true, false}) {
+        BIP324Cipher& sender{from_initiator ? initiator : responder};
+        BIP324Cipher& receiver{from_initiator ? responder : initiator};
+        const std::array<std::byte, 2> contents{std::byte{0xaa}, std::byte{0xbb}};
+        const std::array<std::byte, 1> aad{std::byte{0x42}};
+        std::vector<std::byte> ciphertext(contents.size() + BIP324Cipher::EXPANSION);
+        sender.Encrypt(contents, aad, /*ignore=*/false, ciphertext);
+
+        const auto received_len{
+            receiver.DecryptLength(std::span{ciphertext}.first(BIP324Cipher::LENGTH_LEN))};
+        BOOST_REQUIRE_EQUAL(received_len, contents.size());
+        ciphertext.back() ^= std::byte{0x01};
+
+        std::vector<std::byte> recovered(received_len);
+        bool ignore{false};
+        BOOST_CHECK(!receiver.Decrypt(
+            std::span{ciphertext}.subspan(BIP324Cipher::LENGTH_LEN),
+            aad, ignore, recovered));
     }
 }
 
